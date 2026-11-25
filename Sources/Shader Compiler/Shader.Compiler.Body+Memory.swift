@@ -5,6 +5,11 @@ internal import W3C_WebAssembly
 extension Shader.Compiler.Body {
     typealias Helper = Shader.Compiler.Helper
 
+    /// The word at an address, which is checked unless it is known to lie in the stack.
+    private mutating func word(_ base: Metal.Expression, _ offset: UInt32) -> Metal.Expression {
+        call(stacked(base) ? .loadStack : .load, [at(base, offset)])
+    }
+
     private mutating func call(_ helper: Helper, _ arguments: [Metal.Expression]) -> Metal.Expression {
         use.helpers.insert(helper)
         return .call(helper.rawValue, [Shader.Compiler.Unit.state] + arguments)
@@ -18,7 +23,7 @@ extension Shader.Compiler.Body {
 
     /// The bytes at an address as one number, lowest first.
     private mutating func bytes(_ count: UInt32, _ base: Metal.Expression, _ address: Instruction.Address) -> Metal.Expression {
-        if count == 4, address.alignment >= 2 { return call(.load, [at(base, address.offset)]) }
+        if count == 4, address.alignment >= 2 { return word(base, address.offset) }
         var whole: Metal.Expression?
         for place in 0..<count {
             let byte = call(.loadByte, [at(base, address.offset &+ place)])
@@ -61,7 +66,7 @@ extension Shader.Compiler.Body {
         let base = try pop(.i32)
         func put(_ count: UInt32, _ bits: Metal.Expression, _ address: Instruction.Address, _ body: inout Self) {
             if count == 4, address.alignment >= 2 {
-                out.append(.evaluate(body.call(.store, [body.at(base, address.offset), bits])))
+                out.append(.evaluate(body.call(body.stacked(base) ? .storeStack : .store, [body.at(base, address.offset), bits])))
             } else {
                 for place in 0..<count {
                     let byte = place == 0 ? bits : Metal.Expression.binary(bits, .right, .uint(8 * place))
@@ -92,6 +97,18 @@ extension Shader.Compiler.Body {
         let name = Metal.Expression.name("t\(made)")
         out.append(.declare(.uint, "t\(made)", .uint(0)))
         func place(_ base: Metal.Expression) -> Metal.Expression { .binary(.convert(.uint, [base]), .plus, name) }
+        if let whole = Self.number(count), whole % 4 == 0, whole <= 512, copying ? stacked(from) && stacked(to) : Self.number(from) == 0 && stacked(to) {
+            // Values in the stack lie at multiples of four bytes.
+            let words = (0..<UInt32(whole) / 4).map { $0 * 4 }
+            let values = words.map { place -> Metal.Expression in
+                guard copying else { return .uint(0) }
+                made += 1
+                out.append(.declare(.uint, "t\(made)", word(from, place)))
+                return .name("t\(made)")
+            }
+            for (place, value) in zip(words, values) { out.append(.evaluate(call(.storeStack, [at(to, place), value]))) }
+            return
+        }
         var body: [Metal.Statement] = []
         if copying {
             let length = Metal.Expression.convert(.uint, [count])

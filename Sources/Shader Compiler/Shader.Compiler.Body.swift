@@ -23,7 +23,12 @@ extension Shader.Compiler {
         }
 
         let module: W3C.WebAssembly.Module
-        let index: Int
+        let key: Shader.Compiler.Key
+        let surveyed: [Int: Shader.Compiler.Use]
+        /// The parameters of each function that number a buffer.
+        let numbering: [Int: [Int: Shader.Compiler.Access]]
+        /// Those of this one, as they are found.
+        var numbered: [Int: Shader.Compiler.Access] = [:]
         var locals: [Value] = []
         var results: [Value] = []
         var stack: [Entry] = []
@@ -32,12 +37,28 @@ extension Shader.Compiler {
         var blocks: UInt32 = 0
         var branches = false
         var use = Use()
+        /// The locals known to hold a constant here.
+        var fixed: [Int: Int32] = [:]
         /// How many bytes of stack the function takes itself.
         var frame = 0
 
-        init(module: W3C.WebAssembly.Module, index: Int) {
+        /// Whether the function is an entry, whose parameters a kernel's grid or a caller outside gives.
+        var entry = false
+        /// The names that hold an address in the stack here.
+        var stacked: Set<String> = []
+
+        var index: Int { key.index }
+
+        init(
+            module: W3C.WebAssembly.Module,
+            key: Shader.Compiler.Key,
+            numbering: [Int: [Int: Shader.Compiler.Access]],
+            surveyed: [Int: Shader.Compiler.Use]
+        ) {
             self.module = module
-            self.index = index
+            self.key = key
+            self.surveyed = surveyed
+            self.numbering = numbering
         }
     }
 }
@@ -59,7 +80,9 @@ extension Shader.Compiler.Body {
         var head: [Metal.Statement] = [.pragma("fp math_mode(safe)"), .pragma("fp contract(off)")]
         for (number, value) in locals.enumerated() {
             let kind = try kind(value)
-            if number < signature.parameters.count {
+            if let access = numbering[index]?[number] {
+                parameters.append(.init(.pointer(.uint, .device, constant: !access.written), "l\(number)"))
+            } else if number < signature.parameters.count {
                 parameters.append(.init(kind, "l\(number)"))
             } else {
                 head.append(.declare(kind, "l\(number)", Self.zero(value)))
@@ -74,9 +97,9 @@ extension Shader.Compiler.Body {
         if ended, let result = results.first, !Self.returns(body.last) { body.append(.return(Self.zero(result))) }
         if branches { head.append(.declare(.uint, "target", .uint(0))) }
         return .init(
-            role: .inner,
+            role: .inlined,
             result: try results.first.map { value throws(Error) in try kind(value) } ?? .void,
-            name: Shader.Compiler.Unit.name(index),
+            name: key.name,
             parameters: parameters,
             body: head + body
         )
@@ -114,6 +137,19 @@ extension Shader.Compiler.Body {
         return entry.expression
     }
 
+    /// Forgets what locals hold.
+    mutating func forget(_ locals: Set<Int>) {
+        for local in locals {
+            fixed[local] = nil
+            stacked.remove("l\(local)")
+        }
+    }
+
+    /// Whether an expression is an address in the stack.
+    func stacked(_ expression: Metal.Expression) -> Bool {
+        if case .name(let name) = expression { stacked.contains(name) } else { false }
+    }
+
     /// Puts an expression on the stack as it stands: a constant, or a name that does not change.
     mutating func push(_ value: Value, _ expression: Metal.Expression) {
         stack.append(.init(value: value, expression: expression))
@@ -132,6 +168,7 @@ extension Shader.Compiler.Body {
             guard case .name(let name) = stack[place].expression, name.hasPrefix("l"), local.map({ name == "l\($0)" }) ?? true else { continue }
             made += 1
             out.append(.declare(try kind(stack[place].value), "t\(made)", stack[place].expression))
+            if stacked(stack[place].expression) { stacked.insert("t\(made)") }
             stack[place].expression = .name("t\(made)")
         }
     }
@@ -145,11 +182,11 @@ extension Shader.Compiler.Body {
     /// Writes one instruction and says whether what follows it is never reached.
     private mutating func step(_ instruction: Instruction, _ out: inout [Metal.Statement]) throws(Error) -> Bool {
         switch instruction {
-        case .block(let block, let body): return try open(block, loop: false, &out) { unit, out throws(Error) in try unit.write(body, into: &out) }
-        case .loop(let block, let body): return try open(block, loop: true, &out) { unit, out throws(Error) in try unit.write(body, into: &out) }
+        case .block(let block, let body): return try open(block, body, &out) { unit, out throws(Error) in try unit.write(body, into: &out) }
+        case .loop(let block, let body): return try open(block, body, loop: true, &out) { unit, out throws(Error) in try unit.write(body, into: &out) }
         case .if(let block, let then, let otherwise):
             let condition = Metal.Expression.binary(try pop(.i32), .unequal, .uint(0))
-            return try open(block, loop: false, &out) { unit, out throws(Error) in
+            return try open(block, then + otherwise, &out) { unit, out throws(Error) in
                 try unit.choose(condition, then: then, otherwise: otherwise, &out)
             }
         case .br(let label):
@@ -189,10 +226,12 @@ extension Shader.Compiler.Body {
         _ out: inout [Metal.Statement]
     ) throws(Error) -> Bool {
         let height = stack.count
+        let known = (fixed, stacked)
         var first: [Metal.Statement] = []
         let firstEnds = try write(then, into: &first)
         if !firstEnds { try give(&first) }
         stack.removeLast(stack.count - height)
+        (fixed, stacked) = known
         var second: [Metal.Statement] = []
         let secondEnds = try write(otherwise, into: &second)
         if !secondEnds { try give(&second) }
@@ -209,11 +248,14 @@ extension Shader.Compiler.Body {
 
     private mutating func open(
         _ block: Instruction.Block,
-        loop: Bool,
+        _ inside: [Instruction],
+        loop: Bool = false,
         _ out: inout [Metal.Statement],
         _ body: (inout Self, inout [Metal.Statement]) throws(Error) -> Bool
     ) throws(Error) -> Bool {
         try keep(&out)
+        let changed = inside.assigned
+        if loop { forget(changed) }
         var result: (value: Value, name: String)?
         switch block {
         case .empty: break
@@ -252,6 +294,7 @@ extension Shader.Compiler.Body {
                 : [.break]
             out.append(.if(.binary(Self.target, .unequal, .uint(0)), goes))
         }
+        forget(changed)
         if let result { push(result.value, .name(result.name)) }
         return false
     }

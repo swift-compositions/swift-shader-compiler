@@ -31,7 +31,7 @@ extension `Shader.Compiler Tests` {
     @Suite
     struct Metal {
         @Test
-        func `A kernel reads one buffer and writes another, each bound at its number`() throws {
+        func `A kernel reads one buffer and writes another, each bound at its number, one read only at known places as constants`() throws {
             let body: [Instruction] = [
                 .i32(3), .i32(0), .i32(1), .i32(8), .call(0), .localGet(0), .numeric(.i32Add), .call(1),
             ]
@@ -39,23 +39,23 @@ extension `Shader.Compiler Tests` {
             #expect(
                 text == """
                     struct Shader_State {
-                        device const uint * r1;
+                        constant uint * c1;
                         device uint * w3;
                     };
 
-                    static void shader_2(thread Shader_State & s, int l0, int l1) {
+                    static __attribute__((always_inline)) void shader_2_1(thread Shader_State & s, int l0, int l1) {
                         #pragma METAL fp math_mode(safe)
                         #pragma METAL fp contract(off)
-                        int t1 = int(s.r1[2u]);
+                        int t1 = int(s.c1[2u]);
                         int t2 = int(uint(t1) + uint(l0));
                         s.w3[0u] = uint(t2);
                     }
 
-                    kernel void add(device const uint * b1 [[buffer(1)]], device uint * b3 [[buffer(3)]], uint2 id [[thread_position_in_grid]]) {
+                    kernel void add(constant uint * b1 [[buffer(1)]], device uint * b3 [[buffer(3)]], uint2 id [[thread_position_in_grid]]) {
                         Shader_State s;
-                        s.r1 = b1;
+                        s.c1 = b1;
                         s.w3 = b3;
-                        shader_2(s, int(id.x), int(id.y));
+                        shader_2_1(s, int(id.x), int(id.y));
                     }
 
                     """

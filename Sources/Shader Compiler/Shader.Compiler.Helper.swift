@@ -5,6 +5,8 @@ extension Shader.Compiler {
     /// A function of the text's own that others are written with.
     enum Helper: String, CaseIterable, Comparable {
         case load = "shader_load"
+        case loadStack = "shader_load_stack"
+        case storeStack = "shader_store_stack"
         case loadByte = "shader_load_byte"
         case store = "shader_store"
         case storeByte = "shader_store_byte"
@@ -44,6 +46,8 @@ extension Shader.Compiler.Helper {
         let shift = Metal.Expression.binary(.binary(at, .and, .uint(3)), .left, .uint(3))
         let word = Metal.Expression.binary(at, .and, .uint(~3))
         switch self {
+        case .loadStack: return inner(.uint, [state, address], [.return(stack)])
+        case .storeStack: return inner(.void, [state, address, .init(.uint, "value")], [.assign(stack, value)])
         case .load:
             var body: [Metal.Statement] = []
             if memory.size > 0 { body.append(.if(inside, [.return(stack)])) }

@@ -17,8 +17,26 @@ extension Shader.Compiler.Body {
     private mutating func integer(_ width: Width, _ sign: Metal.Expression.Binary, _ out: inout [Metal.Statement]) throws(Error) {
         let second = try pop(width.value)
         let first = try pop(width.value)
+        if let a = Self.number(first), let b = Self.number(second), let whole = Self.worked(a, sign, b) {
+            push(.i32, .convert(.int, [.uint(UInt32(bitPattern: whole))]))
+            return
+        }
         let worked = Metal.Expression.binary(Self.unsigned(first, width.unsigned), sign, Self.unsigned(second, width.unsigned))
+        let address = stacked(first) != stacked(second) && (sign == .plus || sign == .minus)
         try make(width.value, .convert(width.signed, [worked]), &out)
+        if address { stacked.insert("t\(made)") }
+    }
+
+    /// What two constants give.
+    private static func worked(_ first: Int32, _ sign: Metal.Expression.Binary, _ second: Int32) -> Int32? {
+        switch sign {
+        case .plus: first &+ second
+        case .minus: first &- second
+        case .times: first &* second
+        case .and: first & second
+        case .or: first | second
+        default: nil
+        }
     }
 
     /// An expression as a type: a constant as that type's, and one that has the type as it stands.

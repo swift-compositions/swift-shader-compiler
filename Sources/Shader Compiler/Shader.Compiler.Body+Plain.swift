@@ -13,19 +13,30 @@ extension Shader.Compiler.Body {
             let second = try pop()
             guard let value = stack.last?.value else { throw .malformed(function: index) }
             let first = try pop()
+            let address = stacked(first) && stacked(second)
+            defer { if address { stacked.insert("t\(made)") } }
             try make(value, .conditional(.binary(condition, .unequal, .uint(0)), first, second), &out)
         case .localGet(let number):
             guard locals.indices.contains(number) else { throw .malformed(function: index) }
-            push(locals[number], .name("l\(number)"))
+            if let fixed = fixed[number] {
+                push(.i32, .convert(.int, [.uint(UInt32(bitPattern: fixed))]))
+            } else {
+                push(locals[number], .name("l\(number)"))
+            }
         case .localSet(let number): try set(number, try pop(), &out)
         case .localTee(let number):
             guard let entry = stack.last else { throw .malformed(function: index) }
             _ = try pop()
             try set(number, entry.expression, &out)
-            push(entry.value, .name("l\(number)"))
+            if let whole = fixed[number] {
+                push(.i32, .convert(.int, [.uint(UInt32(bitPattern: whole))]))
+            } else {
+                push(entry.value, .name("l\(number)"))
+            }
         case .globalGet(let number):
             guard module.globals.indices.contains(number) else { throw .malformed(function: index) }
             try make(module.globals[number].kind.value, .member(Shader.Compiler.Unit.state, "g\(number)"), &out)
+            if number == 0 { stacked.insert("t\(made)") }
         case .globalSet(let number): out.append(.assign(.member(Shader.Compiler.Unit.state, "g\(number)"), try pop()))
         case .i32(let number): push(.i32, .convert(.int, [.uint(UInt32(bitPattern: number))]))
         case .i64(let number): push(.i64, .convert(.long, [.ulong(UInt64(bitPattern: number))]))
@@ -52,7 +63,10 @@ extension Shader.Compiler.Body {
 
     private mutating func set(_ number: Int, _ value: Metal.Expression, _ out: inout [Metal.Statement]) throws(Error) {
         guard locals.indices.contains(number) else { throw .malformed(function: index) }
+        fixed[number] = locals[number] == .i32 ? Self.number(value) : nil
+        let address = stacked(value)
         try keep(local: number, &out)
+        if address { stacked.insert("l\(number)") } else { stacked.remove("l\(number)") }
         if value != .name("l\(number)") { out.append(.assign(.name("l\(number)"), value)) }
     }
 
@@ -70,8 +84,18 @@ extension Shader.Compiler.Body {
             try outside(imported[callee].module, imported[callee].name, arguments, &out)
             return
         }
-        use.calls.insert(callee)
-        let call = Metal.Expression.call(Shader.Compiler.Unit.name(callee), [Shader.Compiler.Unit.state] + arguments)
+        let its = surveyed[callee]?.fixed ?? []
+        let called = Shader.Compiler.Key(index: callee, constants: key.constants.intersection(its))
+        use.calls.insert(called)
+        var given: [Metal.Expression] = []
+        for (place, argument) in arguments.enumerated() {
+            if let access = numbering[callee]?[place] {
+                given.append(try buffer(argument, access))
+            } else {
+                given.append(argument)
+            }
+        }
+        let call = Metal.Expression.call(called.name, [Shader.Compiler.Unit.state] + given)
         if let result = signature.results.first {
             try make(result, call, &out)
         } else {
@@ -79,46 +103,93 @@ extension Shader.Compiler.Body {
         }
     }
 
-    /// A constant argument's number.
-    private func constant(_ expression: Metal.Expression?) throws(Error) -> Int32 {
-        guard case .convert(.int, let values)? = expression, case .uint(let bits)? = values.first else { throw .constant(function: index) }
+    /// The number a constant is.
+    static func number(_ expression: Metal.Expression?) -> Int32? {
+        guard case .convert(.int, let values)? = expression, values.count == 1, case .uint(let bits)? = values.first else { return nil }
         return Int32(bitPattern: bits)
     }
 
-    private mutating func outside(_ from: String, _ name: String, _ arguments: [Metal.Expression], _ out: inout [Metal.Statement]) throws(Error) {
-        func word(_ pointer: String) -> Metal.Expression {
-            if case .convert(.int, let values) = arguments[1], case .uint(let offset)? = values.first {
-                return .element(.member(Shader.Compiler.Unit.state, pointer), .uint(offset >> 2))
-            }
-            return .element(.member(Shader.Compiler.Unit.state, pointer), .binary(.convert(.uint, [arguments[1]]), .right, .uint(2)))
+    private func constant(_ expression: Metal.Expression?) throws(Error) -> Int32 {
+        guard let number = Self.number(expression) else { throw .constant(function: index) }
+        return number
+    }
+
+    /// The memory a number stands for: the state's, or a parameter's.
+    private mutating func buffer(_ expression: Metal.Expression?, _ access: Shader.Compiler.Access) throws(Error) -> Metal.Expression {
+        if let number = Self.number(expression) {
+            if access.written { use.writes.insert(number) } else { use.reads.insert(number) }
+            return .member(Shader.Compiler.Unit.state, access.written ? "w\(number)" : "r\(number)")
         }
-        func byte(_ pointer: String) -> Metal.Expression {
+        guard !entry, case .name(let name)? = expression, name.hasPrefix("l"), let local = Int(name.dropFirst()),
+            let signature = module.signature(of: index), signature.parameters.indices.contains(local),
+            !module.functions[index - module.imported.count].body.assigned.contains(local)
+        else { throw .constant(function: index) }
+        numbered[local, default: .init()].written = access.written || numbered[local]?.written ?? false
+        return .name(name)
+    }
+
+    private mutating func outside(_ from: String, _ name: String, _ arguments: [Metal.Expression], _ out: inout [Metal.Statement]) throws(Error) {
+        func word(_ pointer: Metal.Expression) -> Metal.Expression {
+            if case .convert(.int, let values) = arguments[1], case .uint(let offset)? = values.first {
+                return .element(pointer, .uint(offset >> 2))
+            }
+            return .element(pointer, .binary(.convert(.uint, [arguments[1]]), .right, .uint(2)))
+        }
+        func byte(_ pointer: Metal.Expression, constant: Bool) -> Metal.Expression {
             return .element(
-                .pointer(.pointer(.scalar(.uchar), .device, constant: pointer.hasPrefix("r")), .member(Shader.Compiler.Unit.state, pointer)),
+                .pointer(.pointer(.scalar(.uchar), .device, constant: constant), pointer),
                 .convert(.uint, [arguments[1]])
             )
         }
         switch (from, name, arguments.count) {
         case ("shader", "load", 2):
-            let buffer = try constant(arguments.first)
-            use.reads.insert(buffer)
-            try make(.i32, .convert(.int, [word("r\(buffer)")]), &out)
+            if let number = Self.number(arguments[0]), Self.number(arguments[1]) != nil {
+                let constant = key.constants.contains(number)
+                use.fixed.insert(number)
+                if constant { use.constants.insert(number) } else if surveyed[index] != nil { use.reads.insert(number) }
+                try make(.i32, .convert(.int, [word(.member(Shader.Compiler.Unit.state, constant ? "c\(number)" : "r\(number)"))]), &out)
+                return
+            }
+            let memory = try buffer(arguments.first, .init())
+            try make(.i32, .convert(.int, [word(memory)]), &out)
         case ("shader", "store", 3):
-            let buffer = try constant(arguments.first)
-            use.writes.insert(buffer)
-            out.append(.assign(word("w\(buffer)"), .convert(.uint, [arguments[2]])))
+            let memory = try buffer(arguments.first, .init(written: true))
+            out.append(.assign(word(memory), .convert(.uint, [arguments[2]])))
         case ("shader", "result", 2):
             let component = try constant(arguments.first)
             use.results.insert(component)
             out.append(.assign(.member(Shader.Compiler.Unit.state, "result\(component)"), arguments[1]))
+        case ("shader", "load_wide", 2):
+            let place: Metal.Expression
+            let memory: Metal.Expression
+            var space = Metal.Space.device
+            if let number = Self.number(arguments[0]), let offset = Self.number(arguments[1]) {
+                let constant = key.constants.contains(number)
+                use.fixed.insert(number)
+                if constant { use.constants.insert(number) } else if surveyed[index] != nil { use.reads.insert(number) }
+                memory = .member(Shader.Compiler.Unit.state, constant ? "c\(number)" : "r\(number)")
+                if constant { space = .constant }
+                place = .uint(UInt32(bitPattern: offset) >> 3)
+            } else {
+                memory = try buffer(arguments.first, .init())
+                place = .binary(.convert(.uint, [arguments[1]]), .right, .uint(3))
+            }
+            let pair = Metal.Kind.vector(.uint, 2)
+            let wide = Metal.Expression.element(.pointer(.pointer(pair, space, constant: space == .device), memory), place)
+            try make(.i64, .convert(.long, [.bits(.ulong, wide)]), &out)
+        case ("shader", "store_wide", 3):
+            let memory = try buffer(arguments.first, .init(written: true))
+            let place = Metal.Expression.binary(.convert(.uint, [arguments[1]]), .right, .uint(3))
+            let pair = Metal.Kind.vector(.uint, 2)
+            out.append(
+                .assign(.element(.pointer(.pointer(pair, .device), memory), place), .bits(pair, .convert(.ulong, [arguments[2]])))
+            )
         case ("shader", "load_byte", 2):
-            let buffer = try constant(arguments.first)
-            use.reads.insert(buffer)
-            try make(.i32, .convert(.int, [byte("r\(buffer)")]), &out)
+            let memory = try buffer(arguments.first, .init())
+            try make(.i32, .convert(.int, [byte(memory, constant: true)]), &out)
         case ("shader", "store_byte", 3):
-            let buffer = try constant(arguments.first)
-            use.writes.insert(buffer)
-            out.append(.assign(byte("w\(buffer)"), .convert(.scalar(.uchar), [arguments[2]])))
+            let memory = try buffer(arguments.first, .init(written: true))
+            out.append(.assign(byte(memory, constant: false), .convert(.scalar(.uchar), [arguments[2]])))
         case ("shader", "lane", 0), ("shader", "lanes", 0):
             use.lanes = true
             try make(.i32, .convert(.int, [.member(Shader.Compiler.Unit.state, name)]), &out)
@@ -136,7 +207,7 @@ extension Shader.Compiler.Body {
             out.append(.evaluate(.call("\(Metal.Expression.member(Shader.Compiler.Unit.state, "surface")).write", [vector, place])))
         case ("shader", "exp", 1), ("shader", "sin", 1), ("shader", "cos", 1), ("shader", "atan2", 2), ("shader", "pow", 2):
             try make(.f32, .call(name, arguments), &out)
-        case ("env", "powf", 2), ("env", "atan2f", 2), ("env", "tanf", 1), ("env", "atanf", 1):
+        case ("env", "powf", 2), ("env", "atan2f", 2), ("env", "tanf", 1), ("env", "atanf", 1), ("env", "roundf", 1), ("env", "fmodf", 2):
             try make(.f32, .call(String(name.dropLast()), arguments), &out)
         case (_, "__extendhfsf2", 1):
             try make(.f32, .convert(.float, [.bits(.scalar(.half), .convert(.scalar(.ushort), [arguments[0]]))]), &out)
