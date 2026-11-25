@@ -1,0 +1,9 @@
+description: "Writes Swift shader kernels in Metal's shading language, from the WebAssembly they compile to."
+topics:
+  - compositions
+  - shader
+  - metal
+  - webassembly
+homepage: "https://swift-institute.org"
+readme:
+  family: E
