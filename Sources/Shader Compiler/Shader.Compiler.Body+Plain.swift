@@ -92,6 +92,12 @@ extension Shader.Compiler.Body {
             }
             return .element(.member(Shader.Compiler.Unit.state, pointer), .binary(.convert(.uint, [arguments[1]]), .right, .uint(2)))
         }
+        func byte(_ pointer: String) -> Metal.Expression {
+            return .element(
+                .pointer(.pointer(.scalar(.uchar), .device, constant: pointer.hasPrefix("r")), .member(Shader.Compiler.Unit.state, pointer)),
+                .convert(.uint, [arguments[1]])
+            )
+        }
         switch (from, name, arguments.count) {
         case ("shader", "load", 2):
             let buffer = try constant(arguments.first)
@@ -105,6 +111,33 @@ extension Shader.Compiler.Body {
             let component = try constant(arguments.first)
             use.results.insert(component)
             out.append(.assign(.member(Shader.Compiler.Unit.state, "result\(component)"), arguments[1]))
+        case ("shader", "load_byte", 2):
+            let buffer = try constant(arguments.first)
+            use.reads.insert(buffer)
+            try make(.i32, .convert(.int, [byte("r\(buffer)")]), &out)
+        case ("shader", "store_byte", 3):
+            let buffer = try constant(arguments.first)
+            use.writes.insert(buffer)
+            out.append(.assign(byte("w\(buffer)"), .convert(.scalar(.uchar), [arguments[2]])))
+        case ("shader", "lane", 0), ("shader", "lanes", 0):
+            use.lanes = true
+            try make(.i32, .convert(.int, [.member(Shader.Compiler.Unit.state, name)]), &out)
+        case ("shader", "barrier", 0):
+            out.append(.evaluate(.call("simdgroup_barrier", [.name("mem_flags::mem_device")])))
+        case ("shader", "prefix", 1): try make(.f32, .call("simd_prefix_inclusive_sum", arguments), &out)
+        case ("shader", "final", 1):
+            use.lanes = true
+            let last = Metal.Expression.binary(.member(Shader.Compiler.Unit.state, "lanes"), .minus, .uint(1))
+            try make(.f32, .call("simd_broadcast", arguments + [.convert(.scalar(.ushort), [last])]), &out)
+        case ("shader", "surface", 6):
+            use.surface = true
+            let place = Metal.Expression.convert(.vector(.uint, 2), arguments[4...].map { .convert(.uint, [$0]) })
+            let vector = Metal.Expression.convert(.vector(.float, 4), Array(arguments[..<4]))
+            out.append(.evaluate(.call("\(Metal.Expression.member(Shader.Compiler.Unit.state, "surface")).write", [vector, place])))
+        case ("shader", "exp", 1), ("shader", "sin", 1), ("shader", "cos", 1), ("shader", "atan2", 2), ("shader", "pow", 2):
+            try make(.f32, .call(name, arguments), &out)
+        case ("env", "powf", 2), ("env", "atan2f", 2), ("env", "tanf", 1), ("env", "atanf", 1):
+            try make(.f32, .call(String(name.dropLast()), arguments), &out)
         case (_, "__extendhfsf2", 1):
             try make(.f32, .convert(.float, [.bits(.scalar(.half), .convert(.scalar(.ushort), [arguments[0]]))]), &out)
         case (_, "__truncsfhf2", 1):

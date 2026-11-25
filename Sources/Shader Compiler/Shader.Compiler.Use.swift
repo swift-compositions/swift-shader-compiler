@@ -6,6 +6,9 @@ extension Shader.Compiler {
         var reads: Set<Int32> = []
         var writes: Set<Int32> = []
         var results: Set<Int32> = []
+        /// Whether a kernel's lanes are told apart, and whether a texture is written.
+        var lanes = false
+        var surface = false
         var calls: Set<Int> = []
         /// The helpers the function calls.
         var helpers: Set<Helper> = []
@@ -14,6 +17,8 @@ extension Shader.Compiler {
             reads.formUnion(other.reads)
             writes.formUnion(other.writes)
             results.formUnion(other.results)
+            lanes = lanes || other.lanes
+            surface = surface || other.surface
             helpers.formUnion(other.helpers)
         }
     }

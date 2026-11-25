@@ -82,6 +82,8 @@ extension Shader.Compiler.Unit {
         }
         members += use.reads.sorted().map { .init(.pointer(.uint, .device, constant: true), "r\($0)") }
         members += use.writes.sorted().map { .init(.pointer(.uint, .device), "w\($0)") }
+        if use.lanes { members += [.init(.uint, "lane"), .init(.uint, "lanes")] }
+        if use.surface { members.append(.init(.texture(.float), "surface")) }
         members += use.results.sorted().map { .init(.float, "result\($0)") }
         return .init(name: "Shader_State", members: members)
     }
@@ -101,14 +103,20 @@ extension Shader.Compiler.Unit {
         }
         statements += use.reads.sorted().map { .assign(.member(Self.state, "r\($0)"), .name("b\($0)")) }
         statements += use.writes.sorted().map { .assign(.member(Self.state, "w\($0)"), .name("b\($0)")) }
+        if use.lanes { statements += ["lane", "lanes"].map { .assign(.member(Self.state, $0), .name($0)) } }
+        if use.surface { statements.append(.assign(.member(Self.state, "surface"), .name("surface"))) }
         return statements
     }
 
     private func kernel(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use) -> Metal.Function {
-        let parameters: [Metal.Function.Parameter] =
+        var parameters: [Metal.Function.Parameter] =
             use.reads.union(use.writes).sorted().map { index in
                 .init(.pointer(.uint, .device, constant: !use.writes.contains(index)), "b\(index)", .buffer(Int(index)))
             } + [.init(.vector(.uint, 2), "id", .threadPositionInGrid)]
+        if use.surface { parameters.append(.init(.texture(.float), "surface", .texture(0))) }
+        if use.lanes {
+            parameters += [.init(.uint, "lane", .threadIndexInSimdgroup), .init(.uint, "lanes", .threadsPerSimdgroup)]
+        }
         let call = Metal.Expression.call(
             Self.name(entry.index),
             [Self.state, .convert(.int, [.member(.name("id"), "x")]), .convert(.int, [.member(.name("id"), "y")])]
@@ -117,7 +125,7 @@ extension Shader.Compiler.Unit {
     }
 
     private func function(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use) throws(Shader.Compiler.Error) -> Metal.Function {
-        guard let signature = module.signature(of: entry.index), use.reads.isEmpty, use.writes.isEmpty else {
+        guard let signature = module.signature(of: entry.index), use.reads.isEmpty, use.writes.isEmpty, !use.lanes, !use.surface else {
             throw .signature(entry: entry.name)
         }
         var parameters: [Metal.Function.Parameter] = []
