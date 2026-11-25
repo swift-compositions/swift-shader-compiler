@@ -41,8 +41,8 @@ extension Shader.Compiler.File {
         let module = path.first.map(String.init) ?? constant
         var lines = [Self.mark + [target, constant, condition].compactMap { $0 }.joined(separator: ", ")]
         if let condition { lines.append("#if \(condition)") }
-        lines += ["\(indent)import \(module)", "", "\(indent)extension \(holder) {"]
-        lines += ["\(indent)    /// The kernels of \(target) in Metal's shading language.", "\(indent)    static let \(name) = #\"\"\""]
+        lines += ["\(indent)package import \(module)", "", "\(indent)extension \(holder) {"]
+        lines += ["\(indent)    /// The kernels of \(target) in Metal's shading language.", "\(indent)    package static let \(name) = #\"\"\""]
         lines += text.split(separator: "\n", omittingEmptySubsequences: false).map { $0.isEmpty ? "" : "\(indent)        \($0)" }
         lines += ["\(indent)        \"\"\"#", "\(indent)}"]
         if condition != nil { lines.append("#endif") }

@@ -114,7 +114,7 @@ extension `Shader.Compiler Tests` {
             let contents = file.contents("a\n\n    b\n")
             #expect(Shader.Compiler.File(reading: contents) == file)
             #expect(contents.contains("extension Picture.Renderer {"))
-            #expect(contents.contains("static let kernels = #\"\"\"\n            a\n\n                b\n"))
+            #expect(contents.contains("package static let kernels = #\"\"\"\n            a\n\n                b\n"))
             #expect(Shader.Compiler.File(reading: "import Picture\n") == nil)
         }
     }
