@@ -4,7 +4,7 @@ Use this package to turn kernels written with swift-shader into a GPU's language
 
 ## Laws
 
-- The text gives the same bits as the module for every operation it accepts: division and square root are `precise`, math mode is safe and contraction is off in every generated function, and constants are written as bit patterns. Where a GPU flushes a subnormal `float`, results may differ there.
+- The text is the module's operations in Metal's normal maths: division and square root are the GPU's own, and the compiler may fuse a multiply and an add, so a result may differ from the module's in its last bits; constants are written as bit patterns, and integer operations give the same bits. Where a GPU flushes a subnormal `float`, results may differ there too.
 - What cannot be written exactly is refused with an error that names it: `Double`, recursion, a call through a pointer, a growing memory, an import that is not the shader's, a buffer whose number is not known when the code is compiled. Nothing is guessed or left out.
 - Imported `__extendhfsf2` and `__truncsfhf2` are the conversions between `Float16` and `Float`, rounded to nearest even.
 - A trap ends its function, whose result is then 0.
