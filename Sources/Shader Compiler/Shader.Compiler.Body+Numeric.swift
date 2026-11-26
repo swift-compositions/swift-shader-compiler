@@ -128,11 +128,11 @@ extension Shader.Compiler.Body {
         case .f32Floor: try unary(.f32, .f32, &out) { .call("floor", [$0]) }
         case .f32Trunc: try unary(.f32, .f32, &out) { .call("trunc", [$0]) }
         case .f32Nearest: try unary(.f32, .f32, &out) { .call("rint", [$0]) }
-        case .f32Sqrt: try unary(.f32, .f32, &out) { .call("precise::sqrt", [$0]) }
+        case .f32Sqrt: try unary(.f32, .f32, &out) { .call("sqrt", [$0]) }
         case .f32Add: try floating(&out) { .binary($0, .plus, $1) }
         case .f32Sub: try floating(&out) { .binary($0, .minus, $1) }
         case .f32Mul: try floating(&out) { .binary($0, .times, $1) }
-        case .f32Div: try floating(&out) { .call("precise::divide", [$0, $1]) }
+        case .f32Div: try floating(&out) { .binary($0, .over, $1) }
         case .f32Min:
             use.helpers.insert(.least)
             try floating(&out) { .call(Helper.least.rawValue, [$0, $1]) }

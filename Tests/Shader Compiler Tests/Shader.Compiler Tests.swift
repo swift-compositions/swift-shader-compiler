@@ -44,8 +44,6 @@ extension `Shader.Compiler Tests` {
                     };
 
                     static __attribute__((always_inline)) void shader_2_1(thread Shader_State & s, int l0, int l1) {
-                        #pragma METAL fp math_mode(safe)
-                        #pragma METAL fp contract(off)
                         int t1 = int(s.c1[2u]);
                         int t2 = int(uint(t1) + uint(l0));
                         s.w3[0u] = uint(t2);

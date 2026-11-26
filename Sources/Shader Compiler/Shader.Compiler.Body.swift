@@ -77,7 +77,7 @@ extension Shader.Compiler.Body {
         locals = signature.parameters + function.locals
         results = signature.results
         var parameters = [Metal.Function.Parameter(Shader.Compiler.Unit.stateKind, "s")]
-        var head: [Metal.Statement] = [.pragma("fp math_mode(safe)"), .pragma("fp contract(off)")]
+        var head: [Metal.Statement] = []
         for (number, value) in locals.enumerated() {
             let kind = try kind(value)
             if let access = numbering[index]?[number] {
