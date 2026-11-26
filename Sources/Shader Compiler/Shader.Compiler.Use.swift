@@ -11,6 +11,8 @@ extension Shader.Compiler {
         var results: Set<Int32> = []
         /// Whether a kernel's lanes are told apart, and whether a texture is written.
         var lanes = false
+        /// The arrays a place keeps apart, by number, and how many words each has.
+        var locals: [Int32: Int32] = [:]
         var surface = false
         var calls: Set<Key> = []
         /// The helpers the function calls.
@@ -23,6 +25,7 @@ extension Shader.Compiler {
             constants.formUnion(other.constants)
             results.formUnion(other.results)
             lanes = lanes || other.lanes
+            locals.merge(other.locals, uniquingKeysWith: max)
             surface = surface || other.surface
             helpers.formUnion(other.helpers)
         }

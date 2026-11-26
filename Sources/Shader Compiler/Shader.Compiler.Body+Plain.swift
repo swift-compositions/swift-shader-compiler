@@ -184,6 +184,17 @@ extension Shader.Compiler.Body {
             out.append(
                 .assign(.element(.pointer(.pointer(pair, .device), memory), place), .bits(pair, .convert(.ulong, [arguments[2]])))
             )
+        case ("shader", "local", 2):
+            let number = try constant(arguments[0])
+            use.locals[number] = max(use.locals[number] ?? 0, try constant(arguments[1]))
+            let array = Metal.Expression.member(Shader.Compiler.Unit.state, "local\(number)")
+            for place in 0..<UInt32(use.locals[number] ?? 0) { out.append(.assign(.element(array, .uint(place)), .uint(0))) }
+        case ("shader", "local_load", 2):
+            let number = try constant(arguments[0])
+            try make(.i32, .convert(.int, [.element(.member(Shader.Compiler.Unit.state, "local\(number)"), .convert(.uint, [arguments[1]]))]), &out)
+        case ("shader", "local_store", 3):
+            let number = try constant(arguments[0])
+            out.append(.assign(.element(.member(Shader.Compiler.Unit.state, "local\(number)"), .convert(.uint, [arguments[1]])), .convert(.uint, [arguments[2]])))
         case ("shader", "load_byte", 2):
             let memory = try buffer(arguments.first, .init())
             try make(.i32, .convert(.int, [byte(memory, constant: true)]), &out)

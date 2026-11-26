@@ -111,6 +111,7 @@ extension Shader.Compiler.Unit {
         members += use.reads.sorted().map { .init(.pointer(.uint, .device, constant: true), "r\($0)") }
         members += use.writes.sorted().map { .init(.pointer(.uint, .device), "w\($0)") }
         if use.lanes { members += [.init(.uint, "lane"), .init(.uint, "lanes")] }
+        members += use.locals.keys.sorted().map { .init(.pointer(.uint, .thread), "local\($0)") }
         if use.surface { members.append(.init(.texture(.float), "surface")) }
         members += use.results.sorted().map { .init(.float, "result\($0)") }
         return .init(name: "Shader_State", members: members)
@@ -142,6 +143,10 @@ extension Shader.Compiler.Unit {
         statements += use.constants.sorted().map { .assign(.member(Self.state, "c\($0)"), .name("b\($0)")) }
         statements += use.reads.sorted().map { .assign(.member(Self.state, "r\($0)"), .name("b\($0)")) }
         statements += use.writes.sorted().map { .assign(.member(Self.state, "w\($0)"), .name("b\($0)")) }
+        for (number, count) in use.locals.sorted(by: { $0.key < $1.key }) {
+            statements.insert(.array(.uint, "local\(number)", Int(count)), at: 0)
+            statements.append(.assign(.member(Self.state, "local\(number)"), .name("local\(number)")))
+        }
         if use.lanes { statements += ["lane", "lanes"].map { .assign(.member(Self.state, $0), .name($0)) } }
         if use.surface { statements.append(.assign(.member(Self.state, "surface"), .name("surface"))) }
         return statements

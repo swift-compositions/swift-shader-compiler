@@ -22,7 +22,8 @@ extension Shader.Compiler.Body {
             return
         }
         let worked = Metal.Expression.binary(Self.unsigned(first, width.unsigned), sign, Self.unsigned(second, width.unsigned))
-        let address = stacked(first) != stacked(second) && (sign == .plus || sign == .minus)
+        let address =
+            stacked(first) != stacked(second) && (sign == .plus || sign == .minus || (sign == .or && (Self.number(first) ?? Self.number(second)) != nil))
         try make(width.value, .convert(width.signed, [worked]), &out)
         if address { stacked.insert("t\(made)") }
     }
