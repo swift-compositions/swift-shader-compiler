@@ -190,6 +190,26 @@ extension `Shader.Compiler Tests` {
         }
 
         @Test
+        func `A kernel that stores single bytes in a buffer reads and writes the heap atomically`() throws {
+            let body: [Instruction] = [.i32(0), .localGet(0), .i32(1), .call(0)]
+            let imports: [W3C.WebAssembly.Import] = [.init(module: "shader", name: "store_byte", kind: .function(2))]
+            let text = try Shader.Compiler.wgsl(`Shader.Compiler Tests`.module("kernel_mark", `Shader.Compiler Tests`.place, body, imports: imports))["mark"]?.text ?? ""
+            #expect(text.contains("var<storage, read_write> heap: array<atomic<u32>>;"))
+            #expect(text.contains("atomicAnd(&heap[dispatch.bases[0u].x + (bitcast<u32>(l0) >> 2u)], ~(255u << ((bitcast<u32>(l0) & 3u) << 3u)));"))
+            #expect(text.contains("atomicOr(&heap[dispatch.bases[0u].x + (bitcast<u32>(l0) >> 2u)], (1u & 255u) << ((bitcast<u32>(l0) & 3u) << 3u));"))
+        }
+
+        @Test
+        func `A kernel that tells its lanes apart does a row's work in its first place alone`() throws {
+            var module = `Shader.Compiler Tests`.module("kernel_row", `Shader.Compiler Tests`.place, [.call(0), .drop])
+            module.types.append(.init(parameters: [], results: [.i32]))
+            module.imports = [.init(module: "shader", name: "lane", kind: .function(3))]
+            module.exports = [.init(name: "kernel_row", kind: .function, index: 1)]
+            let text = try Shader.Compiler.wgsl(module)["row"]?.text ?? ""
+            #expect(text.contains("if (id.x != 0u) {\n        return;\n    }"))
+        }
+
+        @Test
         func `A 64-bit integer is two words, and arithmetic on constants is worked out before the text`() throws {
             let body: [Instruction] = [
                 .i32(1), .i32(0), .i64(-1), .i64(2), .numeric(.i64Add), .localGet(0), .numeric(.i64ExtendI32S), .numeric(.i64Xor),

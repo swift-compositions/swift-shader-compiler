@@ -138,31 +138,47 @@ extension Shader.Compiler.WGSL.Body {
         return .element(.name(WGSL.heap), at)
     }
 
+    /// A word of `heap` as it is read.
+    private func read(_ place: Expression) -> Expression {
+        atomic ? .call("atomicLoad", [.unary(.address, place)]) : place
+    }
+
+    /// A word of `heap` given a value.
+    private func write(_ place: Expression, _ value: Expression) -> Statement {
+        atomic ? .call("atomicStore", [.unary(.address, place), value]) : .assign(place, value)
+    }
+
     private mutating func outside(_ from: String, _ name: String, _ arguments: [Expression], _ out: inout [Statement]) throws(Error) {
         switch (from, name, arguments.count) {
         case ("shader", "load", 2):
             let memory = try buffer(arguments[0])
-            try make(.i32, WGSL.signed(word(memory, arguments[1], &out)), &out)
+            try make(.i32, WGSL.signed(read(word(memory, arguments[1], &out))), &out)
         case ("shader", "store", 3):
             let memory = try buffer(arguments[0])
-            out.append(.assign(word(memory, arguments[1], &out), WGSL.unsigned(arguments[2])))
+            out.append(write(word(memory, arguments[1], &out), WGSL.unsigned(arguments[2])))
         case ("shader", "load_wide", 2):
             let memory = try buffer(arguments[0])
-            try make(.i64, .construct(WGSL.wide, [word(memory, arguments[1], &out), word(memory, arguments[1], plus: 1, &out)]), &out)
+            try make(.i64, .construct(WGSL.wide, [read(word(memory, arguments[1], &out)), read(word(memory, arguments[1], plus: 1, &out))]), &out)
         case ("shader", "store_wide", 3):
             let memory = try buffer(arguments[0])
-            out.append(.assign(word(memory, arguments[1], &out), .member(arguments[2], "x")))
-            out.append(.assign(word(memory, arguments[1], plus: 1, &out), .member(arguments[2], "y")))
+            out.append(write(word(memory, arguments[1], &out), .member(arguments[2], "x")))
+            out.append(write(word(memory, arguments[1], plus: 1, &out), .member(arguments[2], "y")))
         case ("shader", "load_byte", 2), ("shader", "store_byte", 3):
             let memory = try buffer(arguments[0])
             let offset = WGSL.unsigned(arguments[1])
             let shift = Expression.binary(.binary(offset, .and, .u32(3)), .left, .u32(3))
             let place = word(memory, arguments[1], &out)
+            let byte = Expression.binary(.binary(WGSL.unsigned(arguments[2 % arguments.count]), .and, .u32(255)), .left, shift)
+            let mask = Expression.unary(.complement, .binary(.u32(255), .left, shift))
             if name == "load_byte" {
-                try make(.i32, WGSL.signed(.binary(.binary(place, .right, shift), .and, .u32(255))), &out)
+                try make(.i32, WGSL.signed(.binary(.binary(read(place), .right, shift), .and, .u32(255))), &out)
+            } else if atomic {
+                bytes = true
+                out.append(.call("atomicAnd", [.unary(.address, place), mask]))
+                out.append(.call("atomicOr", [.unary(.address, place), byte]))
             } else {
-                let cleared = Expression.binary(place, .and, .unary(.complement, .binary(.u32(255), .left, shift)))
-                out.append(.assign(place, .binary(cleared, .or, .binary(.binary(WGSL.unsigned(arguments[2]), .and, .u32(255)), .left, shift))))
+                bytes = true
+                out.append(.assign(place, .binary(.binary(place, .and, mask), .or, byte)))
             }
         case ("shader", "local", 2):
             let number = try constant(arguments[0])

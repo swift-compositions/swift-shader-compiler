@@ -44,6 +44,11 @@ extension Shader.Compiler.WGSL {
         var fixed: [Int: Int32] = [:]
         /// Whether the function is an entry, whose parameters a kernel's grid gives.
         var entry = false
+        /// Whether `heap` is read and written by atomic operations, as it is where a kernel stores single bytes in
+        /// a buffer, so that places beside each other do not lose each other's bytes of a word.
+        var atomic = false
+        /// Whether the function stores a single byte in a buffer.
+        var bytes = false
         /// The names that hold an address in the stack here.
         var stacked: Set<String> = []
 

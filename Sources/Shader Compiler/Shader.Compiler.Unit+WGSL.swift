@@ -36,18 +36,30 @@ extension Shader.Compiler.Unit {
         var helpers: Set<WGSL.Helper> = []
         var arrays: [Int32: Int32] = [:]
         var surface = false
-        for key in order where reached.contains(key) {
-            var body = WGSL.Body(module: module, key: key, numbering: numbering, surveyed: surveyed)
-            body.entry = key.index == entry.index
-            functions.append(try body.function())
-            helpers.formUnion(body.helpers)
-            arrays.merge(body.arrays, uniquingKeysWith: max)
-            surface = surface || body.surface
+        var bytes = false
+        // A kernel that stores single bytes in a buffer is written again with `heap` atomic.
+        for atomic in [false, true] {
+            functions = []
+            helpers = []
+            arrays = [:]
+            surface = false
+            bytes = false
+            for key in order where reached.contains(key) {
+                var body = WGSL.Body(module: module, key: key, numbering: numbering, surveyed: surveyed)
+                body.entry = key.index == entry.index
+                body.atomic = atomic
+                functions.append(try body.function())
+                helpers.formUnion(body.helpers)
+                arrays.merge(body.arrays, uniquingKeysWith: max)
+                surface = surface || body.surface
+                bytes = bytes || body.bytes
+            }
+            if !bytes || atomic { break }
         }
         let needed = WGSL.Helper.needed(by: helpers)
         var items: [W3C.WGSL.Source.Item] = [
             .structure(.init(name: "Shader_Dispatch", members: [.init(.vector(.u32, 4), "grid"), .init(.array(.vector(.u32, 4), WGSL.buffers / 4), "bases")])),
-            .variable(.storage(written: true), .array(.u32, nil), WGSL.heap, binding: .init(group: 0, binding: 0)),
+            .variable(.storage(written: true), .array(bytes ? .atomic(.u32) : .u32, nil), WGSL.heap, binding: .init(group: 0, binding: 0)),
             .variable(.uniform, .structure("Shader_Dispatch"), WGSL.dispatch, binding: .init(group: 0, binding: 1)),
         ]
         if !image.words.isEmpty, needed.contains(where: WGSL.Helper.loading.contains) {
@@ -65,12 +77,12 @@ extension Shader.Compiler.Unit {
         }
         items += needed.map { .function($0.function(memory)) }
         items += functions.map { .function($0) }
-        items.append(.function(kernel(entry, root, memory)))
+        items.append(.function(kernel(entry, root, memory, lanes: uses[root]?.lanes ?? false)))
         return W3C.WGSL.Source(items)
     }
 
     /// The entry point: the grid's place, the globals' first values, and the call.
-    private func kernel(_ entry: Shader.Compiler.Entry, _ root: Shader.Compiler.Key, _ memory: Shader.Compiler.Memory) -> W3C.WGSL.Function {
+    private func kernel(_ entry: Shader.Compiler.Entry, _ root: Shader.Compiler.Key, _ memory: Shader.Compiler.Memory, lanes: Bool) -> W3C.WGSL.Function {
         let id = W3C.WGSL.Expression.name("id")
         let grid = W3C.WGSL.Expression.member(.name(WGSL.dispatch), "grid")
         let outside = W3C.WGSL.Expression.binary(
@@ -79,6 +91,8 @@ extension Shader.Compiler.Unit {
             .binary(.member(id, "y"), .atLeast, .member(grid, "y"))
         )
         var body: [W3C.WGSL.Statement] = [.if(outside, [.return(nil)])]
+        // A kernel's lanes are one, so a kernel that tells its lanes apart does a row's work in its first place alone.
+        if lanes { body.append(.if(.binary(.member(id, "x"), .unequal, .u32(0)), [.return(nil)])) }
         for (place, global) in module.globals.enumerated() {
             let value: W3C.WGSL.Expression
             if place == 0, memory.size > 0 {
