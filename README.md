@@ -8,7 +8,7 @@ Use this package to turn kernels written with swift-shader into a GPU's language
 - What cannot be written exactly is refused with an error that names it: `Double`, recursion, a call through a pointer, a growing memory, an import that is not the shader's, a buffer whose number is not known when the code is compiled. Nothing is guessed or left out.
 - Imported `__extendhfsf2` and `__truncsfhf2` are the conversions between `Float16` and `Float`, rounded to nearest even.
 - A trap ends its function, whose result is then 0.
-- The module's own memory is its stack, whose size is the deepest path of calls, and its data, which is read only: a store outside the stack does nothing.
+- The module's own memory is its stack, whose size is the deepest path of calls, and its data, which is read only: a store outside the stack does nothing. Swift's module hashes (data named `.swift_modhash`, which change with the paths of a build) are left out of the data when the module's name section names them, so the same source gives the same text from any checkout.
 - An export named `kernel_<name>` becomes a kernel of that name; its buffers are those its code reads or writes, read only where it only reads. An export named `function_<name>` becomes an inline function of that name; it gives its result, or the vector it handed to `Shader.result(_:)`.
 - Every other name in the text begins with `shader_` or `Shader_`.
 - Equal modules give equal text.

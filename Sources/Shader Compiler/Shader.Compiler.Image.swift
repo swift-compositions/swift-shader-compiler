@@ -4,14 +4,15 @@ internal import Shader
 internal import W3C_WebAssembly
 
 extension Shader.Compiler {
-    /// The data a module starts with, as words from the first address any lies at.
+    /// The data a module starts with, as words from the first address any lies at, but for Swift's module hashes.
     struct Image {
         var start: Int32 = 0
         var words: [UInt32] = []
 
         init(_ module: W3C.WebAssembly.Module) {
             var pieces: [(start: Int, bytes: [Byte])] = []
-            for data in module.data {
+            let hashes = Self.segments(named: Self.hash, in: module)
+            for (index, data) in module.data.enumerated() where !hashes.contains(index) {
                 guard case .i32(let start)? = data.offset?.first else { continue }
                 pieces.append((Int(start), data.bytes))
             }
