@@ -25,6 +25,17 @@ extension Shader.Compiler.WGSL {
     static let dispatch = "dispatch"
     /// How many buffers a kernel may be handed.
     static let buffers = 32
+    /// How many textures an entry may be handed, and a texture's name by its number: in group 1, at the number.
+    static let textures = 8
+    static func texture(_ number: Int32) -> String { "shader_texture\(number)" }
+    /// What reads a texture between its texels: in group 0, at binding 4.
+    static let sampler = "shader_sampler"
+    /// What was read from a texture last, a corner's position, and a fragment's colour: an invocation's own.
+    static let texel = "shader_texel"
+    static let position = "shader_position"
+    static let color = "shader_color"
+    /// The vector one stage hands the next at a place: of `f32`, or of `u32` where it is not interpolated.
+    static func handed(_ place: Int32, flat: Bool) -> String { flat ? "shader_f\(place)" : "shader_v\(place)" }
 
     /// The place in `heap` where a buffer begins, by its number.
     static func base(_ number: Int32) -> Expression {

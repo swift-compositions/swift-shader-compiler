@@ -49,6 +49,8 @@ extension Shader.Compiler.WGSL {
         var atomic = false
         /// Whether the function stores a single byte in a buffer.
         var bytes = false
+        /// The entry the function is written for when that is a stage that draws, which writes no buffer.
+        var stage: String?
         /// The names that hold an address in the stack here.
         var stacked: Set<String> = []
 

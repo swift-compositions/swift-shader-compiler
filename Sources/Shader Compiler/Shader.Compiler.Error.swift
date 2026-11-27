@@ -20,6 +20,8 @@ extension Shader.Compiler {
         case imported(module: String, name: String)
         /// A buffer's number or a result's component is not a constant.
         case constant(function: Int)
+        /// A stage that draws writes a buffer or a texture, gives no position or no whole colour.
+        case stage(entry: String)
         /// The module is not well formed.
         case malformed(function: Int)
     }

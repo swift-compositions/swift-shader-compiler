@@ -14,6 +14,17 @@ extension Shader.Compiler {
         /// The arrays a place keeps apart, by number, and how many words each has.
         var locals: [Int32: Int32] = [:]
         var surface = false
+        /// The textures read or sampled, and those written, by number; whether any is sampled, and whether what
+        /// was read last is asked for.
+        var textures: Set<Int32> = []
+        var stores: Set<Int32> = []
+        var samples = false
+        var texel = false
+        /// Whether a corner's position is given, and the places a vertex stage hands vectors on at and a fragment
+        /// stage takes them at, each with whether its vector is of whole numbers and so not interpolated.
+        var position = false
+        var handed: [Int32: Bool] = [:]
+        var taken: [Int32: Bool] = [:]
         var calls: Set<Key> = []
         /// The helpers the function calls.
         var helpers: Set<Helper> = []
@@ -27,6 +38,13 @@ extension Shader.Compiler {
             lanes = lanes || other.lanes
             locals.merge(other.locals, uniquingKeysWith: max)
             surface = surface || other.surface
+            textures.formUnion(other.textures)
+            stores.formUnion(other.stores)
+            samples = samples || other.samples
+            texel = texel || other.texel
+            position = position || other.position
+            handed.merge(other.handed) { first, _ in first }
+            taken.merge(other.taken) { first, _ in first }
             helpers.formUnion(other.helpers)
         }
     }

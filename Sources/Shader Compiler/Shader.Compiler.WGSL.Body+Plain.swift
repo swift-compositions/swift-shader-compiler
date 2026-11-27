@@ -148,8 +148,48 @@ extension Shader.Compiler.WGSL.Body {
         atomic ? .call("atomicStore", [.unary(.address, place), value]) : .assign(place, value)
     }
 
+    /// Which of a vector's four components a constant names.
+    private func component(_ expression: Expression?) throws(Error) -> Expression {
+        guard let number = Self.number(expression), (0..<4).contains(number) else { throw .constant(function: index) }
+        return .u32(UInt32(number))
+    }
+
+    /// The texture bound at a constant number.
+    private func texture(_ expression: Expression?) throws(Error) -> Expression {
+        let number = try constant(expression)
+        guard (0..<Int32(WGSL.textures)).contains(number) else { throw .constant(function: index) }
+        return .name(WGSL.texture(number))
+    }
+
     private mutating func outside(_ from: String, _ name: String, _ arguments: [Expression], _ out: inout [Statement]) throws(Error) {
+        if let stage, ["store", "store_wide", "store_byte", "surface", "texture_store"].contains(name), from == "shader" {
+            throw .stage(entry: stage)
+        }
         switch (from, name, arguments.count) {
+        case ("shader", "texture_load", 3):
+            let place = Expression.construct(.vector(.u32, 2), arguments[1...].map(WGSL.unsigned))
+            out.append(.assign(.name(WGSL.texel), .call("textureLoad", [try texture(arguments[0]), place, .i32(0)])))
+        case ("shader", "texture_sample", 3):
+            let texture = try texture(arguments[0])
+            let size = Expression.construct(.vector(.f32, 2), [.call("textureDimensions", [texture])])
+            let point = Expression.binary(.construct(.vector(.f32, 2), Array(arguments[1...])), .over, size)
+            out.append(.assign(.name(WGSL.texel), .call("textureSampleLevel", [texture, .name(WGSL.sampler), point, .f32(0)])))
+        case ("shader", "texel", 1): try make(.f32, .element(.name(WGSL.texel), try component(arguments[0])), &out)
+        case ("shader", "texture_store", 7):
+            let place = Expression.construct(.vector(.u32, 2), arguments[5...].map(WGSL.unsigned))
+            out.append(.call("textureStore", [try texture(arguments[0]), place, .construct(.vector(.f32, 4), Array(arguments[1..<5]))]))
+        case ("shader", "position", 4): out.append(.assign(.name(WGSL.position), .construct(.vector(.f32, 4), arguments)))
+        case ("shader", "vary", 5):
+            out.append(.assign(.name(WGSL.handed(try constant(arguments[0]), flat: false)), .construct(.vector(.f32, 4), Array(arguments[1...]))))
+        case ("shader", "vary_flat", 5):
+            let vector = Expression.construct(.vector(.u32, 4), arguments[1...].map(WGSL.unsigned))
+            out.append(.assign(.name(WGSL.handed(try constant(arguments[0]), flat: true)), vector))
+        case ("shader", "varying", 2):
+            try make(.f32, .element(.name(WGSL.handed(try constant(arguments[0]), flat: false)), try component(arguments[1])), &out)
+        case ("shader", "varying_flat", 2):
+            let whole = Expression.element(.name(WGSL.handed(try constant(arguments[0]), flat: true)), try component(arguments[1]))
+            try make(.i32, WGSL.signed(whole), &out)
+        case ("shader", "result", 2): out.append(.assign(.element(.name(WGSL.color), try component(arguments[0])), arguments[1]))
         case ("shader", "load", 2):
             let memory = try buffer(arguments[0])
             try make(.i32, WGSL.signed(read(word(memory, arguments[1], &out))), &out)

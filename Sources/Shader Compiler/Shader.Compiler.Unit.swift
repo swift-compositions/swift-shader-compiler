@@ -104,7 +104,12 @@ extension Shader.Compiler.Unit {
         items += written.map { .function($0) }
         for entry in entries {
             let use = uses[key(entry)] ?? .init()
-            items.append(.function(entry.kind == .kernel ? kernel(entry, use, memory) : try function(entry, use, memory)))
+            switch entry.kind {
+            case .kernel: items.append(.function(kernel(entry, use, memory)))
+            case .function: items.append(.function(try function(entry, use, memory)))
+            case .vertex: items += try vertex(entry, use, memory)
+            case .fragment: items += try fragment(entry, use, memory)
+            }
         }
         return Metal.Source(items)
     }
@@ -121,6 +126,12 @@ extension Shader.Compiler.Unit {
         if use.lanes { members += [.init(.uint, "lane"), .init(.uint, "lanes")] }
         members += use.locals.keys.sorted().map { .init(.pointer(.uint, .thread), "local\($0)") }
         if use.surface { members.append(.init(.texture(.float), "surface")) }
+        members += use.textures.sorted().map { .init(.texture(.float, written: false), "t\($0)") }
+        members += use.stores.sorted().map { .init(.texture(.float), "u\($0)") }
+        if use.samples { members.append(.init(.sampler, "between")) }
+        if use.texel { members.append(.init(.vector(.float, 4), "texel")) }
+        if use.position { members.append(.init(.vector(.float, 4), "position")) }
+        members += use.handed.merging(use.taken) { first, _ in first }.sorted { $0.key < $1.key }.map { .init(.vector($0.value ? .uint : .float, 4), Self.member($0.key, $0.value).name) }
         members += use.results.sorted().map { .init(.float, "result\($0)") }
         return .init(name: "Shader_State", members: members)
     }
@@ -157,16 +168,62 @@ extension Shader.Compiler.Unit {
         }
         if use.lanes { statements += ["lane", "lanes"].map { .assign(.member(Self.state, $0), .name($0)) } }
         if use.surface { statements.append(.assign(.member(Self.state, "surface"), .name("surface"))) }
+        statements += use.textures.sorted().map { .assign(.member(Self.state, "t\($0)"), .name("t\($0)")) }
+        statements += use.stores.sorted().map { .assign(.member(Self.state, "u\($0)"), .name("u\($0)")) }
+        if use.samples { statements.append(.assign(.member(Self.state, "between"), .name("between"))) }
         return statements
     }
 
+    /// A vector one stage hands the next at a place: of `float`, or of `uint` where it is not interpolated.
+    private static func member(_ place: Int32, _ flat: Bool) -> Metal.Structure.Member {
+        .init(.vector(flat ? .uint : .float, 4), flat ? "f\(place)" : "v\(place)", at: .place(Int(place), flat: flat))
+    }
+
+    /// The buffers, textures and sampler an entry is handed. Texture 0 is the surface a kernel writes, so the
+    /// texture bound at a number is one further.
+    private func bound(_ use: Shader.Compiler.Use) -> [Metal.Function.Parameter] {
+        var parameters: [Metal.Function.Parameter] = use.reads.union(use.writes).union(use.constants).sorted().map { index in
+            let kind: Metal.Kind =
+                use.constants.contains(index) ? .pointer(.uint, .constant) : .pointer(.uint, .device, constant: !use.writes.contains(index))
+            return .init(kind, "b\(index)", .buffer(Int(index)))
+        }
+        parameters += use.textures.sorted().map { .init(.texture(.float, written: false), "t\($0)", .texture(Int($0) + 1)) }
+        parameters += use.stores.sorted().map { .init(.texture(.float), "u\($0)", .texture(Int($0) + 1)) }
+        if use.samples { parameters.append(.init(.sampler, "between", .sampler(0))) }
+        return parameters
+    }
+
+    /// A vertex stage: the structure it gives, and its function.
+    private func vertex(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use, _ memory: Shader.Compiler.Memory) throws(Shader.Compiler.Error) -> [Metal.Source.Item] {
+        guard use.position, use.writes.isEmpty, use.stores.isEmpty, !use.surface, !use.lanes else { throw .stage(entry: entry.exported) }
+        let name = "Shader_Handed_\(entry.name)"
+        let places = use.handed.sorted { $0.key < $1.key }.map(Self.member)
+        let structure = Metal.Structure(name: name, members: [.init(.vector(.float, 4), "position", at: .position)] + places)
+        let parameters = [Metal.Function.Parameter(.uint, "corner", .vertexID), .init(.uint, "instance", .instanceID)] + bound(use)
+        let call = Metal.Expression.call(key(entry).name, [Self.state, .convert(.int, [.name("corner")]), .convert(.int, [.name("instance")])])
+        var body = making(entry, use, memory) + [.evaluate(call), .declare(.structure(name), "handed", nil)]
+        body += (["position"] + places.map(\.name)).map { .assign(.member(.name("handed"), $0), .member(Self.state, $0)) }
+        body.append(.return(.name("handed")))
+        return [.structure(structure), .function(.init(role: .vertex, result: .structure(name), name: "vertex_\(entry.name)", parameters: parameters, body: body))]
+    }
+
+    /// A fragment stage: the structure it takes, and its function.
+    private func fragment(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use, _ memory: Shader.Compiler.Memory) throws(Shader.Compiler.Error) -> [Metal.Source.Item] {
+        guard use.results == [0, 1, 2, 3], use.writes.isEmpty, use.stores.isEmpty, !use.surface, !use.lanes else { throw .stage(entry: entry.exported) }
+        let name = "Shader_Taken_\(entry.name)"
+        let places = use.taken.sorted { $0.key < $1.key }.map(Self.member)
+        let structure = Metal.Structure(name: name, members: [.init(.vector(.float, 4), "position", at: .position)] + places)
+        let parameters = [Metal.Function.Parameter(.structure(name), "taken", .stageIn)] + bound(use)
+        let at = Metal.Expression.member(.name("taken"), "position")
+        let call = Metal.Expression.call(key(entry).name, [Self.state, .member(at, "x"), .member(at, "y")])
+        var body = making(entry, use, memory)
+        body += places.map { .assign(.member(Self.state, $0.name), .member(.name("taken"), $0.name)) }
+        body += [.evaluate(call), .return(.convert(.vector(.float, 4), (0..<4).map { .member(Self.state, "result\($0)") }))]
+        return [.structure(structure), .function(.init(role: .fragment, result: .vector(.float, 4), name: "fragment_\(entry.name)", parameters: parameters, body: body))]
+    }
+
     private func kernel(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use, _ memory: Shader.Compiler.Memory) -> Metal.Function {
-        var parameters: [Metal.Function.Parameter] =
-            use.reads.union(use.writes).union(use.constants).sorted().map { index in
-                let kind: Metal.Kind =
-                    use.constants.contains(index) ? .pointer(.uint, .constant) : .pointer(.uint, .device, constant: !use.writes.contains(index))
-                return .init(kind, "b\(index)", .buffer(Int(index)))
-            } + [.init(.vector(.uint, 2), "id", .threadPositionInGrid)]
+        var parameters = bound(use) + [.init(.vector(.uint, 2), "id", .threadPositionInGrid)]
         if use.surface { parameters.append(.init(.texture(.float), "surface", .texture(0))) }
         if use.lanes {
             parameters += [.init(.uint, "lane", .threadIndexInSimdgroup), .init(.uint, "lanes", .threadsPerSimdgroup)]
@@ -179,7 +236,9 @@ extension Shader.Compiler.Unit {
     }
 
     private func function(_ entry: Shader.Compiler.Entry, _ use: Shader.Compiler.Use, _ memory: Shader.Compiler.Memory) throws(Shader.Compiler.Error) -> Metal.Function {
-        guard let signature = module.signature(of: entry.index), use.reads.isEmpty, use.writes.isEmpty, !use.lanes, !use.surface else {
+        guard let signature = module.signature(of: entry.index), use.reads.isEmpty, use.writes.isEmpty, !use.lanes, !use.surface,
+            use.textures.isEmpty, use.stores.isEmpty, !use.position, use.handed.isEmpty, use.taken.isEmpty
+        else {
             throw .signature(entry: entry.name)
         }
         var parameters: [Metal.Function.Parameter] = []

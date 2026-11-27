@@ -109,6 +109,12 @@ extension Shader.Compiler.Body {
         return Int32(bitPattern: bits)
     }
 
+    /// Which of a vector's four components a constant names.
+    private func component(_ expression: Metal.Expression?) throws(Error) -> UInt32 {
+        guard let number = Self.number(expression), (0..<4).contains(number) else { throw .constant(function: index) }
+        return UInt32(number)
+    }
+
     private func constant(_ expression: Metal.Expression?) throws(Error) -> Int32 {
         guard let number = Self.number(expression) else { throw .constant(function: index) }
         return number
@@ -141,6 +147,7 @@ extension Shader.Compiler.Body {
                 .convert(.uint, [arguments[1]])
             )
         }
+        let state = Shader.Compiler.Unit.state
         switch (from, name, arguments.count) {
         case ("shader", "load", 2):
             if let number = Self.number(arguments[0]), Self.number(arguments[1]) != nil {
@@ -216,6 +223,49 @@ extension Shader.Compiler.Body {
             let place = Metal.Expression.convert(.vector(.uint, 2), arguments[4...].map { .convert(.uint, [$0]) })
             let vector = Metal.Expression.convert(.vector(.float, 4), Array(arguments[..<4]))
             out.append(.evaluate(.call("\(Metal.Expression.member(Shader.Compiler.Unit.state, "surface")).write", [vector, place])))
+        case ("shader", "texture_load", 3), ("shader", "texture_sample", 3):
+            let number = try constant(arguments[0])
+            use.textures.insert(number)
+            use.texel = true
+            let texture = "\(Metal.Expression.member(state, "t\(number)"))"
+            let read: Metal.Expression
+            if name == "texture_load" {
+                read = .call("\(texture).read", [.convert(.vector(.uint, 2), arguments[1...].map { .convert(.uint, [$0]) })])
+            } else {
+                use.samples = true
+                let size = Metal.Expression.convert(.vector(.float, 2), [.call("\(texture).get_width", []), .call("\(texture).get_height", [])])
+                let point = Metal.Expression.binary(.convert(.vector(.float, 2), Array(arguments[1...])), .over, size)
+                read = .call("\(texture).sample", [.member(state, "between"), point])
+            }
+            out.append(.assign(.member(state, "texel"), read))
+        case ("shader", "texel", 1):
+            use.texel = true
+            try make(.f32, .element(.member(state, "texel"), .uint(try component(arguments[0]))), &out)
+        case ("shader", "texture_store", 7):
+            let number = try constant(arguments[0])
+            use.stores.insert(number)
+            let place = Metal.Expression.convert(.vector(.uint, 2), arguments[5...].map { .convert(.uint, [$0]) })
+            let vector = Metal.Expression.convert(.vector(.float, 4), Array(arguments[1..<5]))
+            out.append(.evaluate(.call("\(Metal.Expression.member(state, "u\(number)")).write", [vector, place])))
+        case ("shader", "position", 4):
+            use.position = true
+            out.append(.assign(.member(state, "position"), .convert(.vector(.float, 4), arguments)))
+        case ("shader", "vary", 5):
+            let place = try constant(arguments[0])
+            use.handed[place] = false
+            out.append(.assign(.member(state, "v\(place)"), .convert(.vector(.float, 4), Array(arguments[1...]))))
+        case ("shader", "vary_flat", 5):
+            let place = try constant(arguments[0])
+            use.handed[place] = true
+            out.append(.assign(.member(state, "f\(place)"), .convert(.vector(.uint, 4), arguments[1...].map { .convert(.uint, [$0]) })))
+        case ("shader", "varying", 2):
+            let place = try constant(arguments[0])
+            use.taken[place] = false
+            try make(.f32, .element(.member(state, "v\(place)"), .uint(try component(arguments[1]))), &out)
+        case ("shader", "varying_flat", 2):
+            let place = try constant(arguments[0])
+            use.taken[place] = true
+            try make(.i32, .convert(.int, [.element(.member(state, "f\(place)"), .uint(try component(arguments[1])))]), &out)
         case ("shader", "exp", 1), ("shader", "sin", 1), ("shader", "cos", 1), ("shader", "atan2", 2), ("shader", "pow", 2):
             try make(.f32, .call(name, arguments), &out)
         case ("env", "powf", 2), ("env", "atan2f", 2), ("env", "tanf", 1), ("env", "atanf", 1), ("env", "roundf", 1), ("env", "fmodf", 2):
