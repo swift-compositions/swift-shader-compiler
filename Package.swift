@@ -9,6 +9,7 @@ let package = Package(
         .package(url: "https://github.com/swift-molecules/swift-shader.git", branch: "main"),
         .package(url: "https://github.com/swift-standards/swift-metal-standard.git", branch: "main"),
         .package(url: "https://github.com/swift-w3c/swift-w3c-webassembly.git", branch: "main"),
+        .package(url: "https://github.com/swift-w3c/swift-w3c-wgsl.git", branch: "main"),
         .package(url: "https://github.com/swift-atoms/swift-binary.git", branch: "main"),
         .package(url: "https://github.com/swift-atoms/swift-byte.git", branch: "main"),
     ],
@@ -19,6 +20,7 @@ let package = Package(
                 .product(name: "Metal Standard", package: "swift-metal-standard"),
                 .product(name: "Shader", package: "swift-shader"),
                 .product(name: "W3C WebAssembly", package: "swift-w3c-webassembly"),
+                .product(name: "W3C WGSL", package: "swift-w3c-wgsl"),
                 .product(name: "Binary", package: "swift-binary"),
             ]
         ),

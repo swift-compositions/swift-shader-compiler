@@ -115,5 +115,90 @@ extension `Shader.Compiler Tests` {
             #expect(contents.contains("package static let kernels = #\"\"\"\n            a\n\n                b\n"))
             #expect(Shader.Compiler.File(reading: "import Picture\n") == nil)
         }
+
+        @Test
+        func `A generated file of WGSL says so, and carries each kernel's module by name`() {
+            let file = Shader.Compiler.File(language: .wgsl, target: "Picture Shader", constant: "Picture.Renderer.WebGPU.kernels")
+            let contents = file.contents(["b": "two\n", "a": "one\n"])
+            #expect(contents.hasPrefix("// institute shader (WGSL): Picture Shader, Picture.Renderer.WebGPU.kernels\n"))
+            #expect(Shader.Compiler.File(reading: contents) == file)
+            #expect(contents.contains("    package static let kernels: [Swift.String: Swift.String] = [\n        \"a\": #\"\"\"\n            one\n"))
+            #expect(contents.contains("\"\"\"#,\n        \"b\": #\"\"\"\n            two\n"))
+            #expect(Shader.Compiler.File(reading: "// institute shader (GLSL): Picture Shader, Picture.kernels\n") == nil)
+        }
+    }
+
+    @Suite
+    struct WGSL {
+        @Test
+        func `A kernel reads one buffer and writes another in the heap, each at the place its number is given`() throws {
+            let body: [Instruction] = [
+                .i32(3), .i32(0), .i32(1), .i32(8), .call(0), .localGet(0), .numeric(.i32Add), .call(1),
+            ]
+            let texts = try Shader.Compiler.wgsl(`Shader.Compiler Tests`.module("kernel_add", `Shader.Compiler Tests`.place, body))
+            #expect(
+                texts["add"]?.text == """
+                    struct Shader_Dispatch {
+                        grid: vec4<u32>,
+                        bases: array<vec4<u32>, 8>,
+                    }
+
+                    @group(0) @binding(0) var<storage, read_write> heap: array<u32>;
+
+                    @group(0) @binding(1) var<uniform> dispatch: Shader_Dispatch;
+
+                    fn shader_2_1(p0: i32, p1: i32) {
+                        var l0: i32 = p0;
+                        var l1: i32 = p1;
+                        let t1 = bitcast<i32>(heap[dispatch.bases[0u].y + 2u]);
+                        let t2 = bitcast<i32>(bitcast<u32>(t1) + bitcast<u32>(l0));
+                        heap[dispatch.bases[0u].w + 0u] = bitcast<u32>(t2);
+                    }
+
+                    @compute @workgroup_size(64, 1, 1)
+                    fn add(@builtin(global_invocation_id) id: vec3<u32>) {
+                        if ((id.x >= dispatch.grid.x) || (id.y >= dispatch.grid.y)) {
+                            return;
+                        }
+                        shader_2_1(i32(id.x), i32(id.y));
+                    }
+
+                    """
+            )
+        }
+
+        @Test
+        func `A block is a loop its end leaves, a branch further out says which it leaves, and a parameter is copied to change`() throws {
+            let body: [Instruction] = [
+                .block(
+                    .empty,
+                    [
+                        .loop(
+                            .empty,
+                            [
+                                .localGet(0), .i32(1), .numeric(.i32Sub), .localTee(0), .numeric(.i32Eqz), .brIf(1), .br(0),
+                            ]
+                        )
+                    ]
+                )
+            ]
+            let text = try Shader.Compiler.wgsl(`Shader.Compiler Tests`.module("kernel_down", `Shader.Compiler Tests`.place, body))["down"]?.text ?? ""
+            #expect(text.contains("var l0: i32 = p0;"))
+            #expect(text.contains("loop {\n        loop {"))
+            #expect(text.contains("shader_target = 1u;\n                break;\n            }\n            continue;"))
+            #expect(text.contains("if (shader_target != 0u) {\n            break;\n        }\n        break;\n    }"))
+        }
+
+        @Test
+        func `A 64-bit integer is two words, and arithmetic on constants is worked out before the text`() throws {
+            let body: [Instruction] = [
+                .i32(1), .i32(0), .i64(-1), .i64(2), .numeric(.i64Add), .localGet(0), .numeric(.i64ExtendI32S), .numeric(.i64Xor),
+                .numeric(.i32WrapI64), .call(1),
+            ]
+            let text = try Shader.Compiler.wgsl(`Shader.Compiler Tests`.module("kernel_wide", `Shader.Compiler Tests`.place, body))["wide"]?.text ?? ""
+            #expect(text.contains("let t1 = shader_i64_extend_s(l0);"))
+            #expect(text.contains("let t2 = vec2<u32>(vec2<u32>(1u, 0u).x ^ t1.x, vec2<u32>(1u, 0u).y ^ t1.y);"))
+            #expect(text.contains("fn shader_i64_extend_s(a: i32) -> vec2<u32> {"))
+        }
     }
 }

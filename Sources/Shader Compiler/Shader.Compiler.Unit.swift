@@ -18,6 +18,8 @@ extension Shader.Compiler {
         /// How many bytes of stack a function and those it calls take.
         var depths: [Key: Int] = [:]
         var reaching: Set<Int> = []
+        /// The functions in the order they were written, each after those it calls.
+        var order: [Shader.Compiler.Key] = []
         let image: Image
 
         init(module: W3C.WebAssembly.Module, entries: [Entry]) {
@@ -72,21 +74,27 @@ extension Shader.Compiler.Unit {
         uses[key] = use
         depths[key] = below + body.frame
         written.append(function)
+        order.append(key)
     }
 
     /// An entry's function, with the buffers it only reads at places known beforehand.
-    private func key(_ entry: Shader.Compiler.Entry) -> Shader.Compiler.Key {
+    func key(_ entry: Shader.Compiler.Entry) -> Shader.Compiler.Key {
         guard entry.kind == .kernel, let use = surveyed[entry.index] else { return .init(index: entry.index) }
         return .init(index: entry.index, constants: use.fixed.subtracting(use.reads).subtracting(use.writes))
     }
 
     /// How many bytes of stack an entry takes.
-    private func size(_ entry: Shader.Compiler.Entry) -> Int { ((depths[key(entry)] ?? 0) + 15) & ~15 }
+    func size(_ entry: Shader.Compiler.Entry) -> Int { ((depths[key(entry)] ?? 0) + 15) & ~15 }
+
+    /// Finds what every entry reaches and uses, and writes each function once.
+    mutating func analyse() throws(Shader.Compiler.Error) {
+        for entry in entries { try survey(entry.index) }
+        for entry in entries { try reach(key(entry)) }
+    }
 
     /// The whole text.
     mutating func source() throws(Shader.Compiler.Error) -> Metal.Source {
-        for entry in entries { try survey(entry.index) }
-        for entry in entries { try reach(key(entry)) }
+        try analyse()
         var all = Shader.Compiler.Use()
         for use in uses.values { all.formUnion(use) }
         let memory = Shader.Compiler.Memory(top: top, size: entries.map(size).max() ?? 0, image: image)
